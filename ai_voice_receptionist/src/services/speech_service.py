@@ -1,75 +1,90 @@
 """
-Speech Service Module
-Handles Speech-to-Text and Text-to-Speech functionality using OpenAI APIs
+Speech Service
+Handles speech-to-text and text-to-speech operations
 """
-
 import os
 import io
-import tempfile
+import openai
 from openai import OpenAI
-from typing import Optional, Union
+from src.models.call import BusinessConfig
 
 class SpeechService:
     def __init__(self):
-        """Initialize the Speech Service with OpenAI client"""
-        self.client = OpenAI()
+        # Get OpenAI API key from business config or environment
+        self.client = None
+        self._client_initialized = False
     
-    def speech_to_text(self, audio_file: Union[str, io.BytesIO], language: Optional[str] = None) -> str:
+    def _ensure_client_initialized(self):
+        """Ensure OpenAI client is initialized before use"""
+        if not self._client_initialized:
+            self._initialize_client()
+            self._client_initialized = True
+    
+    def _initialize_client(self):
+        """Initialize OpenAI client with API key"""
+        try:
+            # Try to get API key from business config first
+            api_key = None
+            try:
+                config = BusinessConfig.query.filter_by(key='openai_api_key').first()
+                api_key = config.value if config and config.value else None
+            except:
+                # Database might not be available yet, fall back to environment
+                pass
+            
+            if not api_key:
+                api_key = os.getenv('OPENAI_API_KEY')
+            
+            if api_key:
+                self.client = OpenAI(api_key=api_key)
+            else:
+                print("Warning: No OpenAI API key found. Speech services will not work.")
+        except Exception as e:
+            print(f"Error initializing OpenAI client: {e}")
+    
+    def speech_to_text(self, audio_file_path):
         """
-        Convert speech audio to text using OpenAI Whisper API
+        Convert speech to text using OpenAI Whisper
         
         Args:
-            audio_file: Path to audio file or BytesIO object containing audio data
-            language: Optional language code (e.g., 'en', 'es', 'fr')
-        
+            audio_file_path (str): Path to the audio file
+            
         Returns:
-            Transcribed text from the audio
+            str: Transcribed text or None if failed
         """
         try:
-            # Handle different input types
-            if isinstance(audio_file, str):
-                # File path provided
-                with open(audio_file, 'rb') as f:
-                    transcript = self.client.audio.transcriptions.create(
-                        model="whisper-1",
-                        file=f,
-                        language=language
-                    )
-            elif isinstance(audio_file, io.BytesIO):
-                # BytesIO object provided
-                audio_file.seek(0)  # Reset to beginning
+            self._ensure_client_initialized()
+            
+            if not self.client:
+                raise Exception("OpenAI client not initialized")
+            
+            with open(audio_file_path, 'rb') as audio_file:
                 transcript = self.client.audio.transcriptions.create(
                     model="whisper-1",
-                    file=audio_file,
-                    language=language
+                    file=audio_file
                 )
-            else:
-                raise ValueError("audio_file must be a file path string or BytesIO object")
-            
-            return transcript.text
-        
+                return transcript.text
+                
         except Exception as e:
-            print(f"Error in speech-to-text conversion: {str(e)}")
-            raise
+            print(f"Speech-to-text error: {e}")
+            return None
     
-    def text_to_speech(self, text: str, voice: str = "alloy", output_path: Optional[str] = None) -> Union[str, bytes]:
+    def text_to_speech(self, text, voice="alloy"):
         """
-        Convert text to speech using OpenAI TTS API
+        Convert text to speech using OpenAI TTS
         
         Args:
-            text: Text to convert to speech
-            voice: Voice to use (alloy, echo, fable, onyx, nova, shimmer)
-            output_path: Optional path to save the audio file
-        
+            text (str): Text to convert to speech
+            voice (str): Voice to use (alloy, echo, fable, onyx, nova, shimmer)
+            
         Returns:
-            If output_path is provided, returns the path to the saved file
-            Otherwise, returns the audio data as bytes
+            bytes: Audio data or None if failed
         """
         try:
-            # Available voices: alloy, echo, fable, onyx, nova, shimmer
-            valid_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-            if voice not in valid_voices:
-                voice = "alloy"  # Default fallback
+            self._ensure_client_initialized()
+            
+            if not self.client:
+                raise Exception("OpenAI client not initialized")
             
             response = self.client.audio.speech.create(
                 model="tts-1",
@@ -77,39 +92,17 @@ class SpeechService:
                 input=text
             )
             
-            if output_path:
-                # Save to file
-                with open(output_path, 'wb') as f:
-                    f.write(response.content)
-                return output_path
-            else:
-                # Return audio data as bytes
-                return response.content
-        
+            return response.content
+            
         except Exception as e:
-            print(f"Error in text-to-speech conversion: {str(e)}")
-            raise
+            print(f"Text-to-speech error: {e}")
+            return None
     
-    def get_available_voices(self) -> list:
+    def get_available_voices(self):
         """
         Get list of available TTS voices
         
         Returns:
-            List of available voice names
+            list: Available voice names
         """
         return ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-    
-    def validate_audio_format(self, file_path: str) -> bool:
-        """
-        Validate if the audio file format is supported
-        
-        Args:
-            file_path: Path to the audio file
-        
-        Returns:
-            True if format is supported, False otherwise
-        """
-        supported_formats = ['.mp3', '.mp4', '.mpeg', '.mpga', '.m4a', '.wav', '.webm']
-        file_extension = os.path.splitext(file_path)[1].lower()
-        return file_extension in supported_formats
-
